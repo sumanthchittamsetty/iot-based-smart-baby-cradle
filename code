@@ -1,0 +1,158 @@
+// ---------------- BLYNK CREDENTIALS ----------------
+#define BLYNK_TEMPLATE_ID "TMPL3L0WYDdvr"
+#define BLYNK_TEMPLATE_NAME "Smart Cradle"
+#define BLYNK_AUTH_TOKEN "o6CCDAE5XXy6kDJAI6LCRApqdo_0wWjQ"
+
+#include <WiFi.h>
+#include <BlynkSimpleEsp32.h>
+#include <ESP32Servo.h>
+#include <DHT.h>
+#include <DFRobotDFPlayerMini.h>
+
+// ---------------- WIFI ----------------
+const char* ssid = "sumannaidu1013";
+const char* password = "suman1013";
+
+// ---------------- PIN DEFINITIONS ----------------
+#define PIR_SENSOR 13
+#define CRY_SENSOR 14
+#define WET_SENSOR 12
+#define SERVO1_PIN 5
+#define SERVO2_PIN 18
+#define DFPLAYER_RX 16
+#define DFPLAYER_TX 17
+#define DHT_PIN 4
+
+// ---------------- OBJECTS ----------------
+Servo servo1;
+Servo servo2;
+DHT dht(DHT_PIN, DHT11);
+HardwareSerial mp3Serial(2);
+DFRobotDFPlayerMini dfPlayer;
+BlynkTimer timer;
+
+// ---------------- VARIABLES ----------------
+bool motionDetected = false;
+bool cryingDetected = false;
+bool cryAlertSent = false;
+bool wetAlertSent = false;
+
+unsigned long motionStartTime = 0;
+unsigned long cryStartTime = 0;
+
+// Rocking variables
+int servoPos = 90;
+int direction = 1;
+unsigned long lastMoveTime = 0;
+const int swingMin = 70;
+const int swingMax = 110;
+const int swingSpeed = 20;
+
+// ---------------- SENSOR FUNCTION ----------------
+void readSensors() {
+
+  float temperature = dht.readTemperature();
+  float humidity = dht.readHumidity();
+
+  if (!isnan(temperature) && !isnan(humidity)) {
+    Blynk.virtualWrite(V1, temperature);
+    Blynk.virtualWrite(V2, humidity);
+  }
+
+  // Wet sensor alert (only once)
+  if (digitalRead(WET_SENSOR) == HIGH) {
+    if (!wetAlertSent) {
+      Blynk.logEvent("wet_alert");
+      wetAlertSent = true;
+    }
+  } else {
+    wetAlertSent = false;
+  }
+}
+
+// ---------------- SETUP ----------------
+void setup() {
+
+  Serial.begin(115200);
+  Blynk.begin(BLYNK_AUTH_TOKEN, ssid, password);
+
+  pinMode(PIR_SENSOR, INPUT);
+  pinMode(CRY_SENSOR, INPUT);
+  pinMode(WET_SENSOR, INPUT);
+
+  servo1.attach(SERVO1_PIN);
+  servo2.attach(SERVO2_PIN);
+  servo1.write(90);
+  servo2.write(90);
+
+  dht.begin();
+
+  // DFPlayer using Hardware Serial (Correct for ESP32)
+  mp3Serial.begin(9600, SERIAL_8N1, DFPLAYER_RX, DFPLAYER_TX);
+  if (!dfPlayer.begin(mp3Serial)) {
+    Serial.println("DFPlayer not found!");
+  } else {
+    dfPlayer.volume(25);
+  }
+
+  // Read sensors every 2 seconds
+  timer.setInterval(2000L, readSensors);
+}
+
+// ---------------- LOOP ----------------
+void loop() {
+
+  Blynk.run();
+  timer.run();
+
+  // ----------- MOTION ROCKING (NON-BLOCKING) -----------
+  if (digitalRead(PIR_SENSOR) == HIGH) {
+
+    if (!motionDetected) {
+      motionDetected = true;
+      motionStartTime = millis();
+    }
+
+    if (millis() - motionStartTime <= 20000) {
+
+      if (millis() - lastMoveTime > swingSpeed) {
+        lastMoveTime = millis();
+
+        servoPos += direction;
+
+        if (servoPos >= swingMax || servoPos <= swingMin) {
+          direction = -direction;
+        }
+
+        servo1.write(servoPos);
+        servo2.write(servoPos);
+      }
+
+    } else {
+      servo1.write(90);
+      servo2.write(90);
+      motionDetected = false;
+    }
+  }
+
+  // ----------- CRY DETECTION -----------
+  if (digitalRead(CRY_SENSOR) == HIGH) {
+
+    if (!cryingDetected) {
+      cryingDetected = true;
+      cryStartTime = millis();
+      cryAlertSent = false;
+      dfPlayer.play(1);
+    }
+
+    if (!cryAlertSent && millis() - cryStartTime >= 10000) {
+      Blynk.logEvent("cry_alert");
+      cryAlertSent = true;
+    }
+
+  } else {
+    dfPlayer.stop();
+    cryingDetected = false;
+    cryAlertSent = false;
+  }
+}
